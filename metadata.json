@@ -1,0 +1,5 @@
+{
+  "name": "NextGen Academy",
+  "description": "Premium AI-powered Science & Biology tutoring with Dr. Lem.",
+  "requestFramePermissions": ["microphone", "identity-credentials-get"]
+}
