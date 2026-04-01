@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { Mermaid } from './Mermaid';
 import { SettingsGear } from './SettingsGear';
-import { generateTutorResponse, parseResponse, generateImage, generateVideo } from '../services/gemini';
+import { generateTutorResponse, generateTutorResponseStream, parseResponse, generateImage, generateVideo } from '../services/gemini';
 import { saveSessionToLocal, exportToDrive, Session, ChatMessage } from '../services/storage';
 import { LiveTutorSession } from '../services/live';
 import { cn } from '../lib/utils';
@@ -31,6 +31,18 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
   const [modelMode, setModelMode] = useState<'local' | 'pro'>(() => {
     return (localStorage.getItem('academy_modelMode') as 'local' | 'pro') || 'local';
   });
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    return (localStorage.getItem('academy_theme') as 'light' | 'dark') || 'light';
+  });
+
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    localStorage.setItem('academy_theme', theme);
+  }, [theme]);
 
   // New AI Feature States
   const [useSearch, setUseSearch] = useState(false);
@@ -165,24 +177,40 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
         }
       }
 
-      const rawResponse = await generateTutorResponse(text, history, grade.toString(), topic, {
+      // Add an empty model message to start streaming into
+      setMessages(prev => [...prev, { role: 'model', text: '', timestamp: Date.now() }]);
+
+      let finalVizCode = '';
+      let finalVizType: 'mermaid' | 'svg' | undefined;
+
+      const rawResponse = await generateTutorResponseStream(text, history, grade.toString(), topic, {
         useSearch,
         useMaps,
         useThinking,
         useFast,
         location,
         attachments: currentAttachments
+      }, (streamedText) => {
+        const { cleanText, vizCode: newVizCode, vizType: newVizType } = parseResponse(streamedText);
+        
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const last = newMessages[newMessages.length - 1];
+          if (last && last.role === 'model') {
+            newMessages[newMessages.length - 1] = { ...last, text: cleanText };
+          }
+          return newMessages;
+        });
+
+        if (newVizCode) {
+          finalVizCode = newVizCode;
+          finalVizType = newVizType;
+          setVizCode(newVizCode);
+          setVizType(newVizType);
+        }
       });
       
-      const { cleanText, vizCode: newVizCode, vizType: newVizType } = parseResponse(rawResponse || '');
-
-      const modelMsg: ChatMessage = { role: 'model', text: cleanText, timestamp: Date.now() };
-      setMessages(prev => [...prev, modelMsg]);
-      
-      if (newVizCode) {
-        setVizCode(newVizCode);
-        setVizType(newVizType);
-      }
+      const modelMsg: ChatMessage = { role: 'model', text: parseResponse(rawResponse).cleanText, timestamp: Date.now() };
 
       // Auto-save to local IndexedDB
       const session: Session = {
@@ -192,8 +220,8 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
         timestamp: Date.now(),
         chat: [...messages, userMsg, modelMsg],
         viz: {
-          type: newVizType || 'mermaid',
-          code: newVizCode || ''
+          type: finalVizType || 'mermaid',
+          code: finalVizCode || ''
         }
       };
       await saveSessionToLocal(user.sub, session);
@@ -305,16 +333,18 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-academy-blue flex flex-col md:flex-row overflow-hidden">
+    <div className="fixed inset-0 bg-academy-blue dark:bg-slate-900 flex flex-col md:flex-row overflow-hidden transition-colors duration-300">
       {/* Settings Gear - Persistent */}
       <SettingsGear 
         mode={modelMode} 
         onModeChange={handleModeChange} 
         onKeySave={handleKeySave} 
+        theme={theme}
+        onThemeChange={setTheme}
       />
 
       {/* 70% Central Visual Board */}
-      <div className="flex-1 h-[50vh] md:h-full bg-white relative overflow-hidden">
+      <div className="flex-1 h-[50vh] md:h-full bg-white dark:bg-slate-950 relative overflow-hidden transition-colors duration-300">
         <div className="absolute top-6 left-6 z-10 flex flex-col gap-2">
           <div className="bg-academy-primary/10 text-academy-primary px-4 py-1 rounded-full text-sm font-bold border border-academy-primary/20">
             {grade}
@@ -337,12 +367,12 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
               <motion.div 
                 animate={{ scale: [1, 1.1, 1] }}
                 transition={{ duration: 3, repeat: Infinity }}
-                className="w-32 h-32 bg-academy-blue rounded-full flex items-center justify-center mx-auto mb-6"
+                className="w-32 h-32 bg-academy-blue dark:bg-slate-900 rounded-full flex items-center justify-center mx-auto mb-6"
               >
                 <Bot size={64} className="text-academy-primary" />
               </motion.div>
-              <h2 className="text-2xl font-bold text-slate-800">Ready to learn?</h2>
-              <p className="text-slate-500">Ask Dr. Lem a question to start the visualization.</p>
+              <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Ready to learn?</h2>
+              <p className="text-slate-500 dark:text-slate-400">Ask Dr. Lem a question to start the visualization.</p>
             </div>
           )}
         </div>
@@ -379,7 +409,7 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
                     />
                   ))}
                 </div>
-                <span className="text-sm font-bold text-slate-700">Dr. Lem is listening...</span>
+                <span className="text-sm font-bold text-slate-700 dark:text-slate-200">Dr. Lem is listening...</span>
               </motion.div>
             )}
           </AnimatePresence>
@@ -387,15 +417,15 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
       </div>
 
       {/* Bottom-Right Chat Panel */}
-      <div className="w-full md:w-[400px] h-[50vh] md:h-full bg-slate-50 border-t md:border-t-0 md:border-l border-slate-200 flex flex-col relative">
+      <div className="w-full md:w-[400px] h-[50vh] md:h-full bg-slate-50 dark:bg-slate-900 border-t md:border-t-0 md:border-l border-slate-200 dark:border-slate-800 flex flex-col relative transition-colors duration-300">
         {/* Chat Header */}
-        <div className="p-4 border-bottom border-slate-200 bg-white flex justify-between items-center">
+        <div className="p-4 border-bottom border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex justify-between items-center transition-colors duration-300">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-academy-primary rounded-xl flex items-center justify-center text-white">
               <Bot size={24} />
             </div>
             <div>
-              <h3 className="font-bold text-slate-800 leading-none">Dr. Lem</h3>
+              <h3 className="font-bold text-slate-800 dark:text-slate-100 leading-none">Dr. Lem</h3>
               <span className="text-[10px] text-academy-secondary font-bold uppercase tracking-wider">Online</span>
             </div>
           </div>
@@ -403,14 +433,14 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
             <button 
               onClick={handleDriveExport}
               disabled={isExporting}
-              className="p-2 hover:bg-slate-100 rounded-xl text-academy-primary transition-colors disabled:opacity-50"
+              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-academy-primary transition-colors disabled:opacity-50"
               title="Export to My Google Drive"
             >
               <CloudUpload size={20} />
             </button>
             <button 
               onClick={() => setMessages([])}
-              className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 transition-colors"
+              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-400 dark:text-slate-500 transition-colors"
               title="Clear Session"
             >
               <Trash2 size={20} />
@@ -418,15 +448,15 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
           </div>
         </div>
 
-        <div className="px-4 py-2 bg-academy-blue/10 text-[10px] text-slate-500 text-center">
+        <div className="px-4 py-2 bg-academy-blue/10 dark:bg-academy-blue/5 text-[10px] text-slate-500 dark:text-slate-400 text-center">
           Your learning stays secure on your device. Sync to Google only on request.
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 chat-scroll">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 chat-scroll dark:bg-slate-950/20">
           {messages.length === 0 && (
             <div className="text-center py-8">
-              <p className="text-sm text-slate-400 italic">
+              <p className="text-sm text-slate-400 dark:text-slate-500 italic">
                 "Hi! I'm Dr. Lem. Let's dive into biology—tell me your grade and topic!"
               </p>
             </div>
@@ -445,7 +475,7 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
                 "p-4 rounded-2xl text-sm leading-relaxed shadow-sm",
                 msg.role === 'user' 
                   ? "bg-academy-primary text-white rounded-tr-none" 
-                  : "bg-white text-slate-700 rounded-tl-none border border-slate-100"
+                  : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-tl-none border border-slate-100 dark:border-slate-700"
               )}>
                 {msg.text.includes('![](') ? (
                   <div>
@@ -470,16 +500,16 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
                   msg.text
                 )}
               </div>
-              <span className="text-[10px] text-slate-400 mt-1 px-1">
+              <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1">
                 {new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
             </motion.div>
           ))}
           {isTyping && (
-            <div className="flex items-center gap-2 text-slate-400 p-2">
-              <div className="w-2 h-2 bg-slate-300 rounded-full animate-bounce" />
-              <div className="w-2 h-2 bg-slate-300 rounded-full animate-bounce [animation-delay:0.2s]" />
-              <div className="w-2 h-2 bg-slate-300 rounded-full animate-bounce [animation-delay:0.4s]" />
+            <div className="flex items-center gap-2 text-slate-400 dark:text-slate-500 p-2">
+              <div className="w-2 h-2 bg-slate-300 dark:bg-slate-600 rounded-full animate-bounce" />
+              <div className="w-2 h-2 bg-slate-300 dark:bg-slate-600 rounded-full animate-bounce [animation-delay:0.2s]" />
+              <div className="w-2 h-2 bg-slate-300 dark:bg-slate-600 rounded-full animate-bounce [animation-delay:0.4s]" />
             </div>
           )}
           <div ref={chatEndRef} />
@@ -509,14 +539,14 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
         )}
 
         {/* Input Area */}
-        <div className="p-4 bg-white border-t border-slate-200">
+        <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 transition-colors duration-300">
           {/* AI Tools Toolbar */}
           <div className="flex items-center gap-2 mb-3 overflow-x-auto no-scrollbar">
             <button
               onClick={() => setUseSearch(!useSearch)}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
-                useSearch ? "bg-blue-500 text-white" : "bg-slate-100 text-slate-500"
+                useSearch ? "bg-blue-500 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
               )}
             >
               <Search size={12} /> Search
@@ -525,7 +555,7 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
               onClick={() => setUseMaps(!useMaps)}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
-                useMaps ? "bg-green-500 text-white" : "bg-slate-100 text-slate-500"
+                useMaps ? "bg-green-500 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
               )}
             >
               <MapPin size={12} /> Maps
@@ -534,7 +564,7 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
               onClick={() => setUseThinking(!useThinking)}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
-                useThinking ? "bg-purple-500 text-white" : "bg-slate-100 text-slate-500"
+                useThinking ? "bg-purple-500 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
               )}
             >
               <Brain size={12} /> Thinking
@@ -543,15 +573,15 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
               onClick={() => setUseFast(!useFast)}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
-                useFast ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-500"
+                useFast ? "bg-orange-500 text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
               )}
             >
               <Zap size={12} /> Fast
             </button>
-            <div className="w-[1px] h-4 bg-slate-200 mx-1" />
+            <div className="w-[1px] h-4 bg-slate-200 dark:bg-slate-700 mx-1" />
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
             >
               <Upload size={12} /> Upload
             </button>
@@ -572,7 +602,7 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleSend()}
               placeholder={isGenerating ? `Generating ${isGenerating}...` : "Ask Dr. Lem anything..."}
-              className="flex-1 bg-slate-100 border-none rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-academy-primary transition-all outline-none"
+              className="flex-1 bg-slate-100 dark:bg-slate-800 border-none rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-academy-primary transition-all outline-none text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
               disabled={!!isGenerating}
             />
             
@@ -580,7 +610,7 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
               <button
                 onClick={handleGenerateImage}
                 disabled={!!isGenerating || !input.trim()}
-                className="p-3 rounded-2xl bg-slate-100 text-slate-500 hover:bg-academy-blue hover:text-academy-primary transition-all disabled:opacity-50"
+                className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-academy-blue dark:hover:bg-slate-700 hover:text-academy-primary transition-all disabled:opacity-50"
                 title="Generate Image"
               >
                 {isGenerating === 'image' ? <Loader2 size={20} className="animate-spin" /> : <ImageIcon size={20} />}
@@ -588,7 +618,7 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
               <button
                 onClick={handleGenerateVideo}
                 disabled={!!isGenerating || (!input.trim() && attachments.length === 0)}
-                className="p-3 rounded-2xl bg-slate-100 text-slate-500 hover:bg-academy-blue hover:text-academy-primary transition-all disabled:opacity-50"
+                className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-academy-blue dark:hover:bg-slate-700 hover:text-academy-primary transition-all disabled:opacity-50"
                 title="Generate Video"
               >
                 {isGenerating === 'video' ? <Loader2 size={20} className="animate-spin" /> : <Video size={20} />}
@@ -608,14 +638,14 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
             <motion.div 
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
-              className="mt-3 flex gap-4 items-center border-t border-slate-100 pt-3"
+              className="mt-3 flex gap-4 items-center border-t border-slate-100 dark:border-slate-800 pt-3"
             >
               <div className="flex flex-col gap-1">
-                <span className="text-[9px] font-bold text-slate-400 uppercase">Image Size</span>
+                <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase">Image Size</span>
                 <select 
                   value={imageConfig.size} 
                   onChange={(e) => setImageConfig(prev => ({ ...prev, size: e.target.value }))}
-                  className="text-[10px] bg-slate-50 border-none rounded-md px-2 py-1 outline-none"
+                  className="text-[10px] bg-slate-50 dark:bg-slate-800 border-none rounded-md px-2 py-1 outline-none text-slate-600 dark:text-slate-300"
                 >
                   <option value="1K">1K</option>
                   <option value="2K">2K</option>
@@ -623,14 +653,14 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
                 </select>
               </div>
               <div className="flex flex-col gap-1">
-                <span className="text-[9px] font-bold text-slate-400 uppercase">Aspect Ratio</span>
+                <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase">Aspect Ratio</span>
                 <select 
                   value={imageConfig.aspectRatio} 
                   onChange={(e) => {
                     setImageConfig(prev => ({ ...prev, aspectRatio: e.target.value }));
                     setVideoConfig(prev => ({ ...prev, aspectRatio: e.target.value as any }));
                   }}
-                  className="text-[10px] bg-slate-50 border-none rounded-md px-2 py-1 outline-none"
+                  className="text-[10px] bg-slate-50 dark:bg-slate-800 border-none rounded-md px-2 py-1 outline-none text-slate-600 dark:text-slate-300"
                 >
                   <option value="1:1">1:1</option>
                   <option value="16:9">16:9</option>

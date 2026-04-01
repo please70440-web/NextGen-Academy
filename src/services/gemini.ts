@@ -12,7 +12,7 @@ const getAI = () => {
   return new GoogleGenAI({ apiKey: apiKey || 'dummy-key' });
 };
 
-export const generateTutorResponse = async (
+const prepareTutorRequest = (
   prompt: string,
   history: { role: 'user' | 'model'; parts: { text: string }[] }[],
   grade: string,
@@ -27,7 +27,6 @@ export const generateTutorResponse = async (
     attachments?: { data: string; mimeType: string }[];
   } = {}
 ) => {
-  const ai = getAI();
   const mode = (localStorage.getItem('academy_modelMode') as 'local' | 'pro') || 'local';
   const isLocal = mode === 'local';
 
@@ -40,8 +39,12 @@ export const generateTutorResponse = async (
        CRITICAL RULES FOR LOCAL MODE:
        1. VOICE-OPTIMIZED TEXT: Explanation FIRST, plain conversational text only. 
        2. NO emojis, NO markdown (*, #, etc). Screen reader must read naturally.
-       3. VISUALIZATIONS = CLIENT-SIDE CODE ONLY.
+       3. VISUALIZATIONS = MANDATORY for complex concepts.
        4. ALL CODE BLOCKS AT VERY END, separated by 2 blank lines.
+       
+       Visualization rules:
+       - For processes/flows (e.g., photosynthesis, respiration), use Mermaid: \`\`\`mermaid graph TD; ... \`\`\`
+       - For anatomy/structures (e.g., heart, cell), use SVG: \`\`\`html <svg ...> ... </svg> \`\`\`
        
        Example Structure:
        A cell membrane acts like a gatekeeper, controlling what enters and leaves the cell.
@@ -61,10 +64,11 @@ export const generateTutorResponse = async (
        2. A visualization block at the VERY END.
        
        Visualization rules:
-       - For processes/flows, use Mermaid syntax: \`\`\`mermaid graph TD; ... \`\`\`
-       - For anatomy/structures, use SVG syntax: \`\`\`html <svg ...> ... </svg> \`\`\`
+       - For biological processes, chemical cycles, or workflows (like photosynthesis, cellular respiration, or the water cycle), ALWAYS use Mermaid syntax: \`\`\`mermaid graph TD; ... \`\`\`
+       - For anatomical structures, cell parts, or physical diagrams (like the human heart, a plant cell, or an atom), ALWAYS use inline SVG syntax: \`\`\`html <svg ...> ... </svg> \`\`\`
        - Keep the conversational text free of markdown/emojis except for a few biology ones like 🧬.
-       - DO NOT overlap text and code. Code blocks MUST be at the end.`;
+       - DO NOT overlap text and code. Code blocks MUST be at the end.
+       - Make SVGs colorful and labeled clearly. Use viewBox="0 0 400 400" as a standard.`;
 
   const tools: any[] = [];
   if (options.useSearch) tools.push({ googleSearch: {} });
@@ -82,22 +86,39 @@ export const generateTutorResponse = async (
     });
   }
 
+  return { 
+    model, 
+    contents: [...history, { role: 'user', parts }], 
+    config: {
+      systemInstruction,
+      tools: tools.length > 0 ? tools : undefined,
+      toolConfig: options.useMaps && options.location ? {
+        retrievalConfig: {
+          latLng: options.location
+        }
+      } : undefined,
+      thinkingConfig: options.useThinking ? {
+        thinkingLevel: ThinkingLevel.HIGH
+      } : undefined
+    }
+  };
+};
+
+export const generateTutorResponse = async (
+  prompt: string,
+  history: { role: 'user' | 'model'; parts: { text: string }[] }[],
+  grade: string,
+  topic: string,
+  options: any = {}
+) => {
+  const ai = getAI();
+  const { model, contents, config } = prepareTutorRequest(prompt, history, grade, topic, options);
+
   try {
     const response = await ai.models.generateContent({
       model,
-      contents: [...history, { role: 'user', parts }],
-      config: {
-        systemInstruction,
-        tools: tools.length > 0 ? tools : undefined,
-        toolConfig: options.useMaps && options.location ? {
-          retrievalConfig: {
-            latLng: options.location
-          }
-        } : undefined,
-        thinkingConfig: options.useThinking ? {
-          thinkingLevel: ThinkingLevel.HIGH
-        } : undefined
-      },
+      contents,
+      config,
     });
 
     let text = response.text || "";
@@ -117,6 +138,42 @@ export const generateTutorResponse = async (
   } catch (error: any) {
     if (error.status === 429) {
       return "I've reached my temporary limit! Please check your provider dashboard to upgrade or switch to Free Local mode.";
+    }
+    throw error;
+  }
+};
+
+export const generateTutorResponseStream = async (
+  prompt: string,
+  history: { role: 'user' | 'model'; parts: { text: string }[] }[],
+  grade: string,
+  topic: string,
+  options: any = {},
+  onChunk: (text: string) => void
+) => {
+  const ai = getAI();
+  const { model, contents, config } = prepareTutorRequest(prompt, history, grade, topic, options);
+
+  try {
+    const response = await ai.models.generateContentStream({
+      model,
+      contents,
+      config,
+    });
+
+    let fullText = "";
+    for await (const chunk of response) {
+      const text = chunk.text;
+      if (text) {
+        fullText += text;
+        onChunk(fullText);
+      }
+    }
+    return fullText;
+  } catch (error: any) {
+    if (error.status === 429) {
+      onChunk("I've reached my temporary limit! Please check your provider dashboard to upgrade or switch to Free Local mode.");
+      return "";
     }
     throw error;
   }
