@@ -1,9 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Phone, PhoneOff, Send, Download, Trash2, Bot, CloudUpload } from 'lucide-react';
+import { 
+  Phone, PhoneOff, Send, Download, Trash2, Bot, CloudUpload, 
+  Search, MapPin, Brain, Zap, Image as ImageIcon, Video, 
+  Upload, X, Sparkles, Maximize2, Loader2, FileVideo, FileImage
+} from 'lucide-react';
 import { Mermaid } from './Mermaid';
 import { SettingsGear } from './SettingsGear';
-import { generateTutorResponse, parseResponse } from '../services/gemini';
+import { generateTutorResponse, parseResponse, generateImage, generateVideo } from '../services/gemini';
 import { saveSessionToLocal, exportToDrive, Session, ChatMessage } from '../services/storage';
 import { LiveTutorSession } from '../services/live';
 import { cn } from '../lib/utils';
@@ -27,9 +31,25 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
   const [modelMode, setModelMode] = useState<'local' | 'pro'>(() => {
     return (localStorage.getItem('academy_modelMode') as 'local' | 'pro') || 'local';
   });
-  
+
+  // New AI Feature States
+  const [useSearch, setUseSearch] = useState(false);
+  const [useMaps, setUseMaps] = useState(false);
+  const [useThinking, setUseThinking] = useState(false);
+  const [useFast, setUseFast] = useState(false);
+  const [attachments, setAttachments] = useState<{ data: string; mimeType: string; name: string }[]>([]);
+  const [isGenerating, setIsGenerating] = useState<'image' | 'video' | null>(null);
+  const [showTools, setShowTools] = useState(false);
+  const [imageConfig, setImageConfig] = useState({ size: '1K' as any, aspectRatio: '1:1' });
+  const [videoConfig, setVideoConfig] = useState({ aspectRatio: '16:9' as any });
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const liveSessionRef = useRef<LiveTutorSession | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isTyping, attachments]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -76,11 +96,27 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
         setIsOnCall(true);
         await liveSessionRef.current.connect({
           onMessage: (text) => {
-            const { cleanText } = parseResponse(text);
-            setMessages(prev => [...prev, { role: 'model', text: cleanText }]);
+            const { cleanText, vizCode, vizType } = parseResponse(text);
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              // If last message is from model and doesn't contain media, update it
+              if (last && last.role === 'model' && !last.text.includes('![](') && !last.text.includes('[Watch Video](')) {
+                const newMessages = [...prev];
+                newMessages[newMessages.length - 1] = { ...last, text: cleanText };
+                return newMessages;
+              }
+              // Otherwise add a new message
+              return [...prev, { role: 'model', text: cleanText }];
+            });
+            
+            if (vizCode && vizType) {
+              setVizCode(vizCode);
+              setVizType(vizType);
+            }
           },
           onInterrupted: () => {
             console.log("Dr. Lem was interrupted");
+            setMessages(prev => [...prev, { role: 'model', text: "*(Interrupted)*", timestamp: Date.now() }]);
           },
           onError: (err) => {
             console.error("Live error:", err);
@@ -97,11 +133,17 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
   };
 
   const handleSend = async (text: string = input) => {
-    if (!text.trim()) return;
+    if (!text.trim() && attachments.length === 0) return;
 
-    const userMsg: ChatMessage = { role: 'user', text };
+    const userMsg: ChatMessage = { 
+      role: 'user', 
+      text: text || (attachments.length > 0 ? `Analyzed ${attachments.length} file(s)` : ''),
+      timestamp: Date.now()
+    };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
+    const currentAttachments = [...attachments];
+    setAttachments([]);
     setIsTyping(true);
 
     try {
@@ -110,10 +152,31 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
         parts: [{ text: m.text }]
       }));
 
-      const rawResponse = await generateTutorResponse(text, history, grade.toString(), topic);
+      // Get location if maps is enabled
+      let location;
+      if (useMaps) {
+        try {
+          const pos = await new Promise<GeolocationPosition>((res, rej) => 
+            navigator.geolocation.getCurrentPosition(res, rej)
+          );
+          location = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+        } catch (e) {
+          console.warn("Location access denied");
+        }
+      }
+
+      const rawResponse = await generateTutorResponse(text, history, grade.toString(), topic, {
+        useSearch,
+        useMaps,
+        useThinking,
+        useFast,
+        location,
+        attachments: currentAttachments
+      });
+      
       const { cleanText, vizCode: newVizCode, vizType: newVizType } = parseResponse(rawResponse || '');
 
-      const modelMsg: ChatMessage = { role: 'model', text: cleanText };
+      const modelMsg: ChatMessage = { role: 'model', text: cleanText, timestamp: Date.now() };
       setMessages(prev => [...prev, modelMsg]);
       
       if (newVizCode) {
@@ -137,8 +200,78 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
 
     } catch (error) {
       console.error('Tutor error:', error);
+      setMessages(prev => [...prev, { role: 'model', text: "I'm sorry, I encountered an error. Please try again.", timestamp: Date.now() }]);
     } finally {
       setIsTyping(false);
+    }
+  };
+
+  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    Array.from(files).forEach((file: File) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAttachments(prev => [...prev, {
+          data: reader.result as string,
+          mimeType: file.type,
+          name: file.name
+        }]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleGenerateImage = async () => {
+    if (!input.trim()) {
+      alert("Please describe the image you want to generate.");
+      return;
+    }
+    setIsGenerating('image');
+    try {
+      const url = await generateImage(input, {
+        size: imageConfig.size,
+        aspectRatio: imageConfig.aspectRatio,
+        quality: 'studio'
+      });
+      setMessages(prev => [...prev, { 
+        role: 'model', 
+        text: `I've generated this image for you: ![](${url})`,
+        timestamp: Date.now()
+      }]);
+      setInput('');
+    } catch (error) {
+      console.error("Image gen error:", error);
+      alert("Failed to generate image.");
+    } finally {
+      setIsGenerating(null);
+    }
+  };
+
+  const handleGenerateVideo = async () => {
+    if (!input.trim() && attachments.length === 0) {
+      alert("Please describe the video or upload an image to animate.");
+      return;
+    }
+    setIsGenerating('video');
+    try {
+      const url = await generateVideo(input, {
+        image: attachments[0]?.mimeType.startsWith('image/') ? attachments[0].data : undefined,
+        aspectRatio: videoConfig.aspectRatio
+      });
+      setMessages(prev => [...prev, { 
+        role: 'model', 
+        text: `I've generated this video for you: [Watch Video](${url})`,
+        timestamp: Date.now()
+      }]);
+      setAttachments([]);
+      setInput('');
+    } catch (error) {
+      console.error("Video gen error:", error);
+      alert("Failed to generate video.");
+    } finally {
+      setIsGenerating(null);
     }
   };
 
@@ -314,10 +447,31 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
                   ? "bg-academy-primary text-white rounded-tr-none" 
                   : "bg-white text-slate-700 rounded-tl-none border border-slate-100"
               )}>
-                {msg.text}
+                {msg.text.includes('![](') ? (
+                  <div>
+                    <p className="mb-2">{msg.text.split('![](')[0]}</p>
+                    <img 
+                      src={msg.text.match(/!\[\]\((.*?)\)/)?.[1]} 
+                      alt="Generated" 
+                      className="rounded-lg w-full shadow-md"
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                ) : msg.text.includes('[Watch Video](') ? (
+                  <div>
+                    <p className="mb-2">{msg.text.split('[Watch Video](')[0]}</p>
+                    <video 
+                      src={msg.text.match(/\[Watch Video\]\((.*?)\)/)?.[1]} 
+                      controls 
+                      className="rounded-lg w-full shadow-md"
+                    />
+                  </div>
+                ) : (
+                  msg.text
+                )}
               </div>
               <span className="text-[10px] text-slate-400 mt-1 px-1">
-                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
             </motion.div>
           ))}
@@ -331,36 +485,163 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
           <div ref={chatEndRef} />
         </div>
 
+        {/* Attachments Preview */}
+        {attachments.length > 0 && (
+          <div className="p-2 bg-slate-100 border-t border-slate-200 flex gap-2 overflow-x-auto">
+            {attachments.map((att, i) => (
+              <div key={i} className="relative group flex-shrink-0">
+                {att.mimeType.startsWith('image/') ? (
+                  <img src={att.data} className="w-16 h-16 object-cover rounded-lg border border-slate-300" />
+                ) : (
+                  <div className="w-16 h-16 bg-slate-200 rounded-lg flex items-center justify-center border border-slate-300">
+                    <FileVideo size={24} className="text-slate-500" />
+                  </div>
+                )}
+                <button 
+                  onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
+                  className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Input Area */}
         <div className="p-4 bg-white border-t border-slate-200">
+          {/* AI Tools Toolbar */}
+          <div className="flex items-center gap-2 mb-3 overflow-x-auto no-scrollbar">
+            <button
+              onClick={() => setUseSearch(!useSearch)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
+                useSearch ? "bg-blue-500 text-white" : "bg-slate-100 text-slate-500"
+              )}
+            >
+              <Search size={12} /> Search
+            </button>
+            <button
+              onClick={() => setUseMaps(!useMaps)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
+                useMaps ? "bg-green-500 text-white" : "bg-slate-100 text-slate-500"
+              )}
+            >
+              <MapPin size={12} /> Maps
+            </button>
+            <button
+              onClick={() => setUseThinking(!useThinking)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
+                useThinking ? "bg-purple-500 text-white" : "bg-slate-100 text-slate-500"
+              )}
+            >
+              <Brain size={12} /> Thinking
+            </button>
+            <button
+              onClick={() => setUseFast(!useFast)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all",
+                useFast ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-500"
+              )}
+            >
+              <Zap size={12} /> Fast
+            </button>
+            <div className="w-[1px] h-4 bg-slate-200 mx-1" />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all"
+            >
+              <Upload size={12} /> Upload
+            </button>
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileUpload} 
+              multiple 
+              accept="image/*,video/*" 
+              className="hidden" 
+            />
+          </div>
+
           <div className="relative flex items-center gap-2">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="Ask Dr. Lem anything..."
+              placeholder={isGenerating ? `Generating ${isGenerating}...` : "Ask Dr. Lem anything..."}
               className="flex-1 bg-slate-100 border-none rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-academy-primary transition-all outline-none"
+              disabled={!!isGenerating}
             />
-            <button
-              onClick={() => handleSend()}
-              disabled={!input.trim() || isTyping}
-              className="bg-academy-primary text-white p-3 rounded-2xl hover:bg-academy-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
-            >
-              <Send size={20} />
-            </button>
-          </div>
-          <div className="mt-3 flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-            {['Photosynthesis', 'Mitosis', 'DNA Structure', 'Human Heart'].map(suggestion => (
+            
+            <div className="flex gap-1">
               <button
-                key={suggestion}
-                onClick={() => handleSend(suggestion)}
-                className="whitespace-nowrap text-[10px] font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-full hover:bg-academy-blue hover:text-academy-primary transition-colors"
+                onClick={handleGenerateImage}
+                disabled={!!isGenerating || !input.trim()}
+                className="p-3 rounded-2xl bg-slate-100 text-slate-500 hover:bg-academy-blue hover:text-academy-primary transition-all disabled:opacity-50"
+                title="Generate Image"
               >
-                {suggestion}
+                {isGenerating === 'image' ? <Loader2 size={20} className="animate-spin" /> : <ImageIcon size={20} />}
               </button>
-            ))}
+              <button
+                onClick={handleGenerateVideo}
+                disabled={!!isGenerating || (!input.trim() && attachments.length === 0)}
+                className="p-3 rounded-2xl bg-slate-100 text-slate-500 hover:bg-academy-blue hover:text-academy-primary transition-all disabled:opacity-50"
+                title="Generate Video"
+              >
+                {isGenerating === 'video' ? <Loader2 size={20} className="animate-spin" /> : <Video size={20} />}
+              </button>
+              <button
+                onClick={() => handleSend()}
+                disabled={(!input.trim() && attachments.length === 0) || isTyping || !!isGenerating}
+                className="bg-academy-primary text-white p-3 rounded-2xl hover:bg-academy-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
+              >
+                <Send size={20} />
+              </button>
+            </div>
           </div>
+
+          {/* Config Controls */}
+          {input.trim() && (
+            <motion.div 
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="mt-3 flex gap-4 items-center border-t border-slate-100 pt-3"
+            >
+              <div className="flex flex-col gap-1">
+                <span className="text-[9px] font-bold text-slate-400 uppercase">Image Size</span>
+                <select 
+                  value={imageConfig.size} 
+                  onChange={(e) => setImageConfig(prev => ({ ...prev, size: e.target.value }))}
+                  className="text-[10px] bg-slate-50 border-none rounded-md px-2 py-1 outline-none"
+                >
+                  <option value="1K">1K</option>
+                  <option value="2K">2K</option>
+                  <option value="4K">4K</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[9px] font-bold text-slate-400 uppercase">Aspect Ratio</span>
+                <select 
+                  value={imageConfig.aspectRatio} 
+                  onChange={(e) => {
+                    setImageConfig(prev => ({ ...prev, aspectRatio: e.target.value }));
+                    setVideoConfig(prev => ({ ...prev, aspectRatio: e.target.value as any }));
+                  }}
+                  className="text-[10px] bg-slate-50 border-none rounded-md px-2 py-1 outline-none"
+                >
+                  <option value="1:1">1:1</option>
+                  <option value="16:9">16:9</option>
+                  <option value="9:16">9:16</option>
+                  <option value="4:3">4:3</option>
+                  <option value="3:4">3:4</option>
+                  <option value="21:9">21:9</option>
+                </select>
+              </div>
+            </motion.div>
+          )}
         </div>
       </div>
     </div>

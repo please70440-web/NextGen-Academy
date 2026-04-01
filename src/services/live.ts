@@ -19,12 +19,18 @@ export class LiveTutorSession {
     this.ai = new GoogleGenAI({ apiKey });
   }
 
+  private nextStartTime: number = 0;
+  private accumulatedText: string = "";
+
+  private audioSources: AudioBufferSourceNode[] = [];
+
   async connect(callbacks: {
     onMessage: (text: string) => void;
     onInterrupted: () => void;
     onError: (err: any) => void;
   }) {
     try {
+      this.accumulatedText = "";
       this.session = await this.ai.live.connect({
         model: "gemini-3.1-flash-live-preview",
         callbacks: {
@@ -33,17 +39,26 @@ export class LiveTutorSession {
             this.startMic();
           },
           onmessage: async (message: LiveServerMessage) => {
-            if (message.serverContent?.modelTurn?.parts[0]?.text) {
-              callbacks.onMessage(message.serverContent.modelTurn.parts[0].text);
+            if (message.serverContent?.modelTurn?.parts) {
+              for (const part of message.serverContent.modelTurn.parts) {
+                if (part.text) {
+                  this.accumulatedText += part.text;
+                  callbacks.onMessage(this.accumulatedText);
+                }
+                if (part.inlineData?.data) {
+                  this.playAudio(part.inlineData.data);
+                }
+              }
             }
             
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio) {
-              this.playAudio(base64Audio);
+            if (message.serverContent?.interrupted) {
+              this.accumulatedText = "";
+              this.stopAudio();
+              callbacks.onInterrupted();
             }
 
-            if (message.serverContent?.interrupted) {
-              callbacks.onInterrupted();
+            if (message.serverContent?.turnComplete) {
+              this.accumulatedText = "";
             }
           },
           onerror: (err) => callbacks.onError(err),
@@ -53,7 +68,7 @@ export class LiveTutorSession {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
           },
-          systemInstruction: "You are Dr. Lem, a warm Science tutor. Keep responses brief and conversational for voice.",
+          systemInstruction: "You are Dr. Lem, a warm Science tutor. Keep responses brief and conversational for voice. When explaining concepts, ALWAYS provide a visualization at the end using ```mermaid ... ``` or ```html <svg>...</svg> ``` blocks. The visualization should appear as you finish your explanation.",
         },
       });
     } catch (err) {
@@ -112,7 +127,26 @@ export class LiveTutorSession {
     const source = this.audioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(this.audioContext.destination);
-    source.start();
+    
+    const now = this.audioContext.currentTime;
+    if (this.nextStartTime < now) {
+      this.nextStartTime = now + 0.05; // Small buffer for network jitter
+    }
+    
+    source.start(this.nextStartTime);
+    this.nextStartTime += buffer.duration;
+    this.audioSources.push(source);
+    source.onended = () => {
+      this.audioSources = this.audioSources.filter(s => s !== source);
+    };
+  }
+
+  private stopAudio() {
+    this.audioSources.forEach(s => {
+      try { s.stop(); } catch (e) {}
+    });
+    this.audioSources = [];
+    this.nextStartTime = 0;
   }
 
   disconnect() {

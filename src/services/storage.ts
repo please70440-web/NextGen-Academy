@@ -3,6 +3,7 @@ import localforage from 'localforage';
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
+  timestamp?: number;
 }
 
 export interface Session {

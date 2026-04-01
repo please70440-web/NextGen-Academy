@@ -1,13 +1,6 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type, ThinkingLevel, GenerateContentResponse, VideoGenerationReferenceType } from "@google/genai";
 
-const MODEL_NAME = "gemini-3-flash-preview";
-
-export const generateTutorResponse = async (
-  prompt: string,
-  history: { role: 'user' | 'model'; parts: { text: string }[] }[],
-  grade: string,
-  topic: string
-) => {
+const getAI = () => {
   const mode = (localStorage.getItem('academy_modelMode') as 'local' | 'pro') || 'local';
   const proKey = localStorage.getItem('academy_apiKey');
   const apiKey = (mode === 'pro' && proKey) ? proKey : process.env.GEMINI_API_KEY!;
@@ -16,9 +9,31 @@ export const generateTutorResponse = async (
     throw new Error("Pro Mode: No API Key found. Please add your key in settings.");
   }
 
-  const ai = new GoogleGenAI({ apiKey: apiKey || 'dummy-key' });
-  
+  return new GoogleGenAI({ apiKey: apiKey || 'dummy-key' });
+};
+
+export const generateTutorResponse = async (
+  prompt: string,
+  history: { role: 'user' | 'model'; parts: { text: string }[] }[],
+  grade: string,
+  topic: string,
+  options: { 
+    useSearch?: boolean; 
+    useMaps?: boolean; 
+    useThinking?: boolean;
+    useFast?: boolean;
+    useComplex?: boolean;
+    location?: { latitude: number; longitude: number };
+    attachments?: { data: string; mimeType: string }[];
+  } = {}
+) => {
+  const ai = getAI();
+  const mode = (localStorage.getItem('academy_modelMode') as 'local' | 'pro') || 'local';
   const isLocal = mode === 'local';
+
+  let model = "gemini-3-flash-preview";
+  if (options.useFast) model = "gemini-3.1-flash-lite-preview";
+  if (options.useComplex || options.useThinking) model = "gemini-3.1-pro-preview";
 
   const systemInstruction = isLocal 
     ? `You are Dr. Lem, a warm Science tutor. 
@@ -51,23 +66,137 @@ export const generateTutorResponse = async (
        - Keep the conversational text free of markdown/emojis except for a few biology ones like 🧬.
        - DO NOT overlap text and code. Code blocks MUST be at the end.`;
 
+  const tools: any[] = [];
+  if (options.useSearch) tools.push({ googleSearch: {} });
+  if (options.useMaps) tools.push({ googleMaps: {} });
+
+  const parts: any[] = [{ text: prompt }];
+  if (options.attachments) {
+    options.attachments.forEach(att => {
+      parts.push({
+        inlineData: {
+          data: att.data.split(',')[1],
+          mimeType: att.mimeType
+        }
+      });
+    });
+  }
+
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [...history, { role: 'user', parts: [{ text: prompt }] }],
+      model,
+      contents: [...history, { role: 'user', parts }],
       config: {
         systemInstruction,
+        tools: tools.length > 0 ? tools : undefined,
+        toolConfig: options.useMaps && options.location ? {
+          retrievalConfig: {
+            latLng: options.location
+          }
+        } : undefined,
+        thinkingConfig: options.useThinking ? {
+          thinkingLevel: ThinkingLevel.HIGH
+        } : undefined
       },
     });
 
-    return response.text;
+    let text = response.text || "";
+    
+    // Extract grounding URLs if present
+    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    if (groundingChunks) {
+      const urls = groundingChunks
+        .map((chunk: any) => chunk.web?.uri || chunk.maps?.uri)
+        .filter(Boolean);
+      if (urls.length > 0) {
+        text += "\n\nSources:\n" + Array.from(new Set(urls)).map(url => `- ${url}`).join('\n');
+      }
+    }
+
+    return text;
   } catch (error: any) {
     if (error.status === 429) {
-      alert("Free quota reached. Upgrade at provider site for unlimited—your key controls everything.");
       return "I've reached my temporary limit! Please check your provider dashboard to upgrade or switch to Free Local mode.";
     }
     throw error;
   }
+};
+
+export const generateImage = async (prompt: string, options: { 
+  size?: '1K' | '2K' | '4K' | '512px';
+  aspectRatio?: string;
+  quality?: 'standard' | 'studio';
+} = {}) => {
+  const ai = getAI();
+  const model = options.quality === 'studio' ? 'gemini-3-pro-image-preview' : 'gemini-3.1-flash-image-preview';
+  
+  const response = await ai.models.generateContent({
+    model,
+    contents: { parts: [{ text: prompt }] },
+    config: {
+      imageConfig: {
+        imageSize: options.size || '1K',
+        aspectRatio: options.aspectRatio || '1:1'
+      }
+    }
+  });
+
+  for (const part of response.candidates?.[0]?.content?.parts || []) {
+    if (part.inlineData) {
+      return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+    }
+  }
+  throw new Error("No image generated");
+};
+
+export const generateVideo = async (prompt: string, options: {
+  image?: string;
+  lastFrame?: string;
+  aspectRatio?: '16:9' | '9:16';
+  resolution?: '720p' | '1080p';
+} = {}) => {
+  const ai = getAI();
+  const model = 'veo-3.1-fast-generate-preview';
+
+  const config: any = {
+    numberOfVideos: 1,
+    aspectRatio: options.aspectRatio || '16:9',
+    resolution: options.resolution || '720p'
+  };
+
+  if (options.lastFrame) {
+    config.lastFrame = {
+      imageBytes: options.lastFrame.split(',')[1],
+      mimeType: options.lastFrame.split(';')[0].split(':')[1]
+    };
+  }
+
+  let operation = await ai.models.generateVideos({
+    model,
+    prompt,
+    image: options.image ? {
+      imageBytes: options.image.split(',')[1],
+      mimeType: options.image.split(';')[0].split(':')[1]
+    } : undefined,
+    config
+  });
+
+  while (!operation.done) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    operation = await ai.operations.getVideosOperation({ operation });
+  }
+
+  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+  if (!downloadLink) throw new Error("Video generation failed");
+
+  const apiKey = (localStorage.getItem('academy_apiKey')) || process.env.GEMINI_API_KEY!;
+  const response = await fetch(downloadLink, {
+    method: 'GET',
+    headers: { 'x-goog-api-key': apiKey }
+  });
+  
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
 };
 
 export const parseResponse = (text: string) => {

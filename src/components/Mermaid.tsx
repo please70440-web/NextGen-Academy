@@ -24,14 +24,23 @@ export const Mermaid = ({ chart }: MermaidProps) => {
 
   useEffect(() => {
     if (ref.current && chart) {
-      ref.current.removeAttribute('data-processed');
-      mermaid.contentLoaded();
+      const renderChart = async () => {
+        try {
+          // Unique ID for each render
+          const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
+          const { svg } = await mermaid.render(id, chart);
+          if (ref.current) {
+            ref.current.innerHTML = svg;
+          }
+        } catch (e) {
+          console.error("Mermaid render error:", e);
+        }
+      };
+      renderChart();
     }
   }, [chart]);
 
   return (
-    <div className="mermaid w-full h-full flex items-center justify-center p-4 overflow-auto" ref={ref}>
-      {chart}
-    </div>
+    <div className="w-full h-full flex items-center justify-center p-4 overflow-auto" ref={ref} />
   );
 };
