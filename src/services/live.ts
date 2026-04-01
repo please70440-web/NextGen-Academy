@@ -8,12 +8,12 @@ export class LiveTutorSession {
   private source: MediaStream | null = null;
 
   constructor() {
-    const isPro = localStorage.getItem('academy_model') === 'pro';
+    const isPro = localStorage.getItem('academy_modelMode') === 'pro';
     const proKey = localStorage.getItem('academy_apiKey');
-    const apiKey = (isPro && proKey) ? proKey : process.env.GEMINI_API_KEY!;
+    const apiKey = (isPro && proKey) ? proKey : process.env.GEMINI_API_KEY;
     
     if (!apiKey) {
-      throw new Error("No API Key found for Live Session.");
+      throw new Error("No API Key found for Live Session. Please set your API key in Settings.");
     }
     
     this.ai = new GoogleGenAI({ apiKey });

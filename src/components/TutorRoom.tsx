@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Phone, PhoneOff, Send, Download, Trash2, Bot, CloudUpload } from 'lucide-react';
 import { Mermaid } from './Mermaid';
+import { SettingsGear } from './SettingsGear';
 import { generateTutorResponse, parseResponse } from '../services/gemini';
 import { saveSessionToLocal, exportToDrive, Session, ChatMessage } from '../services/storage';
 import { LiveTutorSession } from '../services/live';
@@ -23,6 +24,9 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
   const [grade, setGrade] = useState(10);
   const [topic, setTopic] = useState('Biology');
   const [isExporting, setIsExporting] = useState(false);
+  const [modelMode, setModelMode] = useState<'local' | 'pro'>(() => {
+    return (localStorage.getItem('academy_modelMode') as 'local' | 'pro') || 'local';
+  });
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const liveSessionRef = useRef<LiveTutorSession | null>(null);
@@ -37,6 +41,20 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
     };
   }, []);
 
+  const handleModeChange = (mode: 'local' | 'pro') => {
+    setModelMode(mode);
+    localStorage.setItem('academy_modelMode', mode);
+    // In a real app, we might trigger model loading here
+    if (mode === 'local') {
+      console.log("Switching to Local Browser Models...");
+    }
+  };
+
+  const handleKeySave = (provider: string, key: string) => {
+    localStorage.setItem('academy_provider', provider);
+    localStorage.setItem('academy_apiKey', key);
+  };
+
   const toggleCall = async () => {
     if (isOnCall) {
       liveSessionRef.current?.disconnect();
@@ -44,6 +62,16 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
       setIsOnCall(false);
     } else {
       try {
+        // Check if we have an API key before starting
+        const isPro = modelMode === 'pro';
+        const proKey = localStorage.getItem('academy_apiKey');
+        const apiKey = (isPro && proKey) ? proKey : process.env.GEMINI_API_KEY;
+
+        if (!apiKey) {
+          alert("No API Key found. Please go to Settings (gear icon) and add your API key to use voice features.");
+          return;
+        }
+
         liveSessionRef.current = new LiveTutorSession();
         setIsOnCall(true);
         await liveSessionRef.current.connect({
@@ -145,6 +173,13 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
 
   return (
     <div className="fixed inset-0 bg-academy-blue flex flex-col md:flex-row overflow-hidden">
+      {/* Settings Gear - Persistent */}
+      <SettingsGear 
+        mode={modelMode} 
+        onModeChange={handleModeChange} 
+        onKeySave={handleKeySave} 
+      />
+
       {/* 70% Central Visual Board */}
       <div className="flex-1 h-[50vh] md:h-full bg-white relative overflow-hidden">
         <div className="absolute top-6 left-6 z-10 flex flex-col gap-2">

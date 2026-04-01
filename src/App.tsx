@@ -18,7 +18,7 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [showEngineModal, setShowEngineModal] = useState(false);
   const [engine, setEngine] = useState<'local' | 'pro'>(() => {
-    return (localStorage.getItem('academy_model') as 'local' | 'pro') || 'local';
+    return (localStorage.getItem('academy_modelMode') as 'local' | 'pro') || 'local';
   });
 
   useEffect(() => {
@@ -46,7 +46,7 @@ export default function App() {
 
   const handleSelectEngine = (selectedEngine: 'local' | 'pro', apiKey?: string) => {
     setEngine(selectedEngine);
-    localStorage.setItem('academy_model', selectedEngine);
+    localStorage.setItem('academy_modelMode', selectedEngine);
     if (apiKey) {
       localStorage.setItem('academy_apiKey', apiKey);
     }
