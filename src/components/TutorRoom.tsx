@@ -1,25 +1,28 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Phone, PhoneOff, Send, Mic, MicOff, Download, Trash2, User, Bot } from 'lucide-react';
+import { Phone, PhoneOff, Send, Download, Trash2, Bot, CloudUpload } from 'lucide-react';
 import { Mermaid } from './Mermaid';
 import { generateTutorResponse, parseResponse } from '../services/gemini';
-import { saveSession, Session, ChatMessage } from '../services/storage';
+import { saveSessionToLocal, exportToDrive, Session, ChatMessage } from '../services/storage';
 import { LiveTutorSession } from '../services/live';
 import { cn } from '../lib/utils';
+import { v4 as uuidv4 } from 'uuid';
 
 interface TutorRoomProps {
   user: any;
+  token: string;
 }
 
-export const TutorRoom = ({ user }: TutorRoomProps) => {
+export const TutorRoom = ({ user, token }: TutorRoomProps) => {
   const [isOnCall, setIsOnCall] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [vizCode, setVizCode] = useState<string>('');
   const [vizType, setVizType] = useState<'mermaid' | 'svg'>();
-  const [grade, setGrade] = useState('Grade 10');
+  const [grade, setGrade] = useState(10);
   const [topic, setTopic] = useState('Biology');
+  const [isExporting, setIsExporting] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const liveSessionRef = useRef<LiveTutorSession | null>(null);
@@ -44,7 +47,8 @@ export const TutorRoom = ({ user }: TutorRoomProps) => {
       liveSessionRef.current = new LiveTutorSession();
       await liveSessionRef.current.connect({
         onMessage: (text) => {
-          setMessages(prev => [...prev, { role: 'model', text, timestamp: Date.now() }]);
+          const { cleanText } = parseResponse(text);
+          setMessages(prev => [...prev, { role: 'model', text: cleanText }]);
         },
         onInterrupted: () => {
           console.log("Dr. Lem was interrupted");
@@ -60,7 +64,7 @@ export const TutorRoom = ({ user }: TutorRoomProps) => {
   const handleSend = async (text: string = input) => {
     if (!text.trim()) return;
 
-    const userMsg: ChatMessage = { role: 'user', text, timestamp: Date.now() };
+    const userMsg: ChatMessage = { role: 'user', text };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setIsTyping(true);
@@ -71,10 +75,10 @@ export const TutorRoom = ({ user }: TutorRoomProps) => {
         parts: [{ text: m.text }]
       }));
 
-      const rawResponse = await generateTutorResponse(text, history, grade, topic);
+      const rawResponse = await generateTutorResponse(text, history, grade.toString(), topic);
       const { cleanText, vizCode: newVizCode, vizType: newVizType } = parseResponse(rawResponse || '');
 
-      const modelMsg: ChatMessage = { role: 'model', text: cleanText, timestamp: Date.now() };
+      const modelMsg: ChatMessage = { role: 'model', text: cleanText };
       setMessages(prev => [...prev, modelMsg]);
       
       if (newVizCode) {
@@ -82,21 +86,37 @@ export const TutorRoom = ({ user }: TutorRoomProps) => {
         setVizType(newVizType);
       }
 
+      // Auto-save to local IndexedDB
       const session: Session = {
-        id: `session-${Date.now()}`,
+        id: uuidv4(),
         topic,
         grade,
         timestamp: Date.now(),
-        history: [...messages, userMsg, modelMsg],
-        vizCode: newVizCode,
-        vizType: newVizType
+        chat: [...messages, userMsg, modelMsg],
+        viz: {
+          type: newVizType || 'mermaid',
+          code: newVizCode || ''
+        }
       };
-      await saveSession(session);
+      await saveSessionToLocal(user.sub, session);
 
     } catch (error) {
       console.error('Tutor error:', error);
     } finally {
       setIsTyping(false);
+    }
+  };
+
+  const handleDriveExport = async () => {
+    setIsExporting(true);
+    try {
+      await exportToDrive(token, user.sub);
+      alert('Exported to My Google Drive successfully! 🧬');
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('Failed to export. Please try again.');
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -206,11 +226,12 @@ export const TutorRoom = ({ user }: TutorRoomProps) => {
           </div>
           <div className="flex gap-2">
             <button 
-              onClick={handleExport}
-              className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 transition-colors"
-              title="Export to JSON"
+              onClick={handleDriveExport}
+              disabled={isExporting}
+              className="p-2 hover:bg-slate-100 rounded-xl text-academy-primary transition-colors disabled:opacity-50"
+              title="Export to My Google Drive"
             >
-              <Download size={20} />
+              <CloudUpload size={20} />
             </button>
             <button 
               onClick={() => setMessages([])}
@@ -220,6 +241,10 @@ export const TutorRoom = ({ user }: TutorRoomProps) => {
               <Trash2 size={20} />
             </button>
           </div>
+        </div>
+
+        <div className="px-4 py-2 bg-academy-blue/10 text-[10px] text-slate-500 text-center">
+          Your learning stays secure on your device. Sync to Google only on request.
         </div>
 
         {/* Messages */}

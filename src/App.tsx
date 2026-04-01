@@ -9,40 +9,47 @@ import { Login } from './components/Login';
 import { TutorRoom } from './components/TutorRoom';
 import { EngineModal } from './components/EngineModal';
 import { motion, AnimatePresence } from 'motion/react';
+import { initDB } from './services/storage';
 
-const GOOGLE_CLIENT_ID = "6162363262-ucg8a58gpib4eh7guofclgpnjstf868p.apps.googleusercontent.com"; // Updated with real Client ID
+const GOOGLE_CLIENT_ID = "6162363262-ucg8a58gpib4eh7guofclgpnjstf868p.apps.googleusercontent.com";
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [showEngineModal, setShowEngineModal] = useState(false);
-  const [engine, setEngine] = useState<'local' | 'pro'>('local');
+  const [engine, setEngine] = useState<'local' | 'pro'>(() => {
+    return (localStorage.getItem('academy_model') as 'local' | 'pro') || 'local';
+  });
 
   useEffect(() => {
     const savedUser = localStorage.getItem('academy_user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
+    const savedToken = localStorage.getItem('googleToken');
+    if (savedUser && savedToken) {
+      const parsedUser = JSON.parse(savedUser);
+      setUser(parsedUser);
+      setToken(savedToken);
+      initDB(parsedUser.sub);
     }
   }, []);
 
-  const handleLogin = (credentialResponse: any) => {
-    // In a real app, we would decode the JWT
-    const mockUser = {
-      email: 'student@nextgen.edu',
-      name: 'NextGen Student',
-      token: credentialResponse.credential
-    };
-    setUser(mockUser);
-    localStorage.setItem('academy_user', JSON.stringify(mockUser));
+  const handleLogin = (profile: any, accessToken: string) => {
+    setUser(profile);
+    setToken(accessToken);
+    localStorage.setItem('academy_user', JSON.stringify(profile));
+    localStorage.setItem('googleToken', accessToken);
+    initDB(profile.sub);
     
-    // Show engine modal on first login
-    const hasSeenModal = localStorage.getItem('academy_seen_engine_modal');
-    if (!hasSeenModal) {
+    if (!localStorage.getItem('academy_seen_engine_modal')) {
       setShowEngineModal(true);
     }
   };
 
-  const handleSelectEngine = (selectedEngine: 'local' | 'pro') => {
+  const handleSelectEngine = (selectedEngine: 'local' | 'pro', apiKey?: string) => {
     setEngine(selectedEngine);
+    localStorage.setItem('academy_model', selectedEngine);
+    if (apiKey) {
+      localStorage.setItem('academy_apiKey', apiKey);
+    }
     setShowEngineModal(false);
     localStorage.setItem('academy_seen_engine_modal', 'true');
   };
@@ -67,7 +74,7 @@ export default function App() {
               animate={{ opacity: 1 }}
               className="h-screen"
             >
-              <TutorRoom user={user} />
+              <TutorRoom user={user} token={token!} />
               
               {showEngineModal && (
                 <EngineModal 
