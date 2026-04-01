@@ -43,21 +43,28 @@ export const TutorRoom = ({ user, token }: TutorRoomProps) => {
       liveSessionRef.current = null;
       setIsOnCall(false);
     } else {
-      setIsOnCall(true);
-      liveSessionRef.current = new LiveTutorSession();
-      await liveSessionRef.current.connect({
-        onMessage: (text) => {
-          const { cleanText } = parseResponse(text);
-          setMessages(prev => [...prev, { role: 'model', text: cleanText }]);
-        },
-        onInterrupted: () => {
-          console.log("Dr. Lem was interrupted");
-        },
-        onError: (err) => {
-          console.error("Live error:", err);
-          setIsOnCall(false);
-        }
-      });
+      try {
+        liveSessionRef.current = new LiveTutorSession();
+        setIsOnCall(true);
+        await liveSessionRef.current.connect({
+          onMessage: (text) => {
+            const { cleanText } = parseResponse(text);
+            setMessages(prev => [...prev, { role: 'model', text: cleanText }]);
+          },
+          onInterrupted: () => {
+            console.log("Dr. Lem was interrupted");
+          },
+          onError: (err) => {
+            console.error("Live error:", err);
+            setIsOnCall(false);
+            alert("Live Session Error: " + (err.message || "Unknown error"));
+          }
+        });
+      } catch (error: any) {
+        console.error("Failed to start call:", error);
+        setIsOnCall(false);
+        alert(error.message || "Could not start the call. Please check your API Key setup.");
+      }
     }
   };
 
