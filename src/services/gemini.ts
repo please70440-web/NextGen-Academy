@@ -8,7 +8,15 @@ export const generateTutorResponse = async (
   grade: string,
   topic: string
 ) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+  const isPro = localStorage.getItem('academy_model') === 'pro';
+  const proKey = localStorage.getItem('academy_apiKey');
+  const apiKey = (isPro && proKey) ? proKey : process.env.GEMINI_API_KEY!;
+  
+  if (!apiKey) {
+    throw new Error("No API Key found. Please add GEMINI_API_KEY to secrets or enter a Pro key.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
   
   const systemInstruction = `You are Dr. Lem, a warm, encouraging female Science & Biology tutor for NextGen Academy. 
   The student is in ${grade} and wants to learn about ${topic}.
